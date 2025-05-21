@@ -28,11 +28,11 @@ from strings import get_string
 
 
 YUMI_PICS = [
-"https://envs.sh/cOL.jpg",
-"https://envs.sh/cOL.jpg",
-"https://envs.sh/cOL.jpg",
-"https://envs.sh/cOL.jpg",
-"https://envs.sh/cOL.jpg",
+"https://envs.sh/rv9.jpg",
+"https://envs.sh/rv9.jpg",
+"https://envs.sh/rv9.jpg",
+"https://envs.sh/rv9.jpg",
+"https://envs.sh/rv9.jpg",
 
 ]
 
