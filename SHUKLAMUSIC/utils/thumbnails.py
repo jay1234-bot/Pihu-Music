@@ -3,7 +3,6 @@ import re
 import aiofiles
 import aiohttp
 from PIL import Image, ImageDraw, ImageEnhance, ImageFilter, ImageFont, ImageOps
-from unidecode import unidecode
 from youtubesearchpython.__future__ import VideosSearch
 
 def changeImageSize(maxWidth, maxHeight, image):
@@ -49,8 +48,7 @@ def crop_center_circle(img, output_size, border, crop_scale=1.5):
     return Image.composite(final_img, Image.new("RGBA", final_img.size, (0, 0, 0, 0)), mask_border)
 
 async def get_thumb(videoid):
-    if os.path.isfile(f"cache/{videoid}_v4.png"):
-        return f"cache/{videoid}_v4.png"
+    # Always generate a new thumbnail
 
     url = f"https://www.youtube.com/watch?v={videoid}"
     results = VideosSearch(url, limit=1)
@@ -61,7 +59,7 @@ async def get_thumb(videoid):
         views = result.get("viewCount", {}).get("short", "Unknown Views")
         channel = result.get("channel", {}).get("name", "Unknown")
 
-    # Download the thumbnail
+    # Download thumbnail
     async with aiohttp.ClientSession() as session:
         async with session.get(thumbnail) as resp:
             if resp.status == 200:
@@ -71,9 +69,9 @@ async def get_thumb(videoid):
     youtube = Image.open(f"cache/thumb{videoid}.png")
     resized_img = changeImageSize(1280, 720, youtube).convert("RGBA")
 
-    # Add purple blur background
+    # Purple blur background
     blurred_bg = resized_img.filter(ImageFilter.GaussianBlur(25))
-    purple_overlay = Image.new("RGBA", blurred_bg.size, (140, 80, 180, 100))  # light purple overlay
+    purple_overlay = Image.new("RGBA", blurred_bg.size, (140, 80, 180, 100))  # purple tint
     background = Image.alpha_composite(blurred_bg, purple_overlay)
 
     draw = ImageDraw.Draw(background)
@@ -81,25 +79,24 @@ async def get_thumb(videoid):
     font = ImageFont.truetype("SHUKLAMUSIC/assets/assets/font.ttf", 30)
     title_font = ImageFont.truetype("SHUKLAMUSIC/assets/assets/font3.ttf", 45)
 
-    # Circular album art
+    # Circular thumbnail
     circle_thumbnail = crop_center_circle(youtube, 400, 20)
-    circle_thumbnail = circle_thumbnail.resize((400, 400))
     background.paste(circle_thumbnail, (120, 160), circle_thumbnail)
 
-    # Title and Channel Info
+    # Title + Channel + Views
     text_x = 565
     lines = truncate(title)
     draw.text((text_x, 180), lines[0], fill="white", font=title_font)
     draw.text((text_x, 230), lines[1], fill="white", font=title_font)
     draw.text((text_x, 320), f"{channel}  |  {views[:23]}", fill="white", font=arial)
 
-    # Progress Bar
+    # Progress bar
     total_bar_len = 580
     played_len = int(total_bar_len * 0.25)
     draw.line([(text_x, 380), (text_x + played_len, 380)], fill="white", width=9)
     draw.line([(text_x + played_len, text_x + total_bar_len), (text_x + total_bar_len, 380)], fill="#888", width=8)
 
-    # Progress Dot
+    # Dot
     radius = 10
     dot_pos = text_x + played_len
     draw.ellipse([dot_pos - radius, 370 - radius, dot_pos + radius, 370 + radius], fill="white")
@@ -108,14 +105,15 @@ async def get_thumb(videoid):
     draw.text((text_x, 400), "00:24", fill="white", font=arial)
     draw.text((1080, 400), duration, fill="white", font=arial)
 
-    # Controls Image
+    # Controls image
     play_icons = Image.open("SHUKLAMUSIC/assets/assets/controls.png").resize((580, 62))
     background.paste(play_icons, (text_x, 450), play_icons)
 
+    # Save final image
+    save_path = f"cache/{videoid}_v4.png"
     try:
         os.remove(f"cache/thumb{videoid}.png")
     except:
         pass
-
-    background.save(f"cache/{videoid}_v4.png")
-    return f"cache/{videoid}_v4.png"
+    background.save(save_path)
+    return save_path
