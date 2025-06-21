@@ -5,66 +5,48 @@ import aiohttp
 from PIL import Image, ImageDraw, ImageEnhance, ImageFilter, ImageFont, ImageOps
 from unidecode import unidecode
 from youtubesearchpython.__future__ import VideosSearch
-from SHUKLAMUSIC import app
-from config import YOUTUBE_IMG_URL
 
 def changeImageSize(maxWidth, maxHeight, image):
     widthRatio = maxWidth / image.size[0]
     heightRatio = maxHeight / image.size[1]
     newWidth = int(widthRatio * image.size[0])
     newHeight = int(heightRatio * image.size[1])
-    newImage = image.resize((newWidth, newHeight))
-    return newImage
+    return image.resize((newWidth, newHeight))
 
 def truncate(text):
-    list = text.split(" ")
+    parts = text.split(" ")
     text1 = ""
-    text2 = ""    
-    for i in list:
-        if len(text1) + len(i) < 30:        
-            text1 += " " + i
-        elif len(text2) + len(i) < 30:       
-            text2 += " " + i
-
-    text1 = text1.strip()
-    text2 = text2.strip()     
-    return [text1,text2]
+    text2 = ""
+    for part in parts:
+        if len(text1) + len(part) < 30:
+            text1 += " " + part
+        elif len(text2) + len(part) < 30:
+            text2 += " " + part
+    return [text1.strip(), text2.strip()]
 
 def crop_center_circle(img, output_size, border, crop_scale=1.5):
-    half_the_width = img.size[0] / 2
-    half_the_height = img.size[1] / 2
-    larger_size = int(output_size * crop_scale)
-    img = img.crop(
-        (
-            half_the_width - larger_size/2,
-            half_the_height - larger_size/2,
-            half_the_width + larger_size/2,
-            half_the_height + larger_size/2
-        )
-    )
-    
-    img = img.resize((output_size - 2*border, output_size - 2*border))
-    
-    
+    center_x = img.size[0] / 2
+    center_y = img.size[1] / 2
+    size = int(output_size * crop_scale)
+    img = img.crop((
+        center_x - size / 2,
+        center_y - size / 2,
+        center_x + size / 2,
+        center_y + size / 2
+    ))
+    img = img.resize((output_size - 2 * border, output_size - 2 * border))
     final_img = Image.new("RGBA", (output_size, output_size), "white")
-    
-    
-    mask_main = Image.new("L", (output_size - 2*border, output_size - 2*border), 0)
+
+    mask_main = Image.new("L", (output_size - 2 * border, output_size - 2 * border), 0)
     draw_main = ImageDraw.Draw(mask_main)
-    draw_main.ellipse((0, 0, output_size - 2*border, output_size - 2*border), fill=255)
-    
+    draw_main.ellipse((0, 0, output_size - 2 * border, output_size - 2 * border), fill=255)
     final_img.paste(img, (border, border), mask_main)
-    
-    
+
     mask_border = Image.new("L", (output_size, output_size), 0)
     draw_border = ImageDraw.Draw(mask_border)
     draw_border.ellipse((0, 0, output_size, output_size), fill=255)
-    
-    result = Image.composite(final_img, Image.new("RGBA", final_img.size, (0, 0, 0, 0)), mask_border)
-    
-    return result
 
-
+    return Image.composite(final_img, Image.new("RGBA", final_img.size, (0, 0, 0, 0)), mask_border)
 
 async def get_thumb(videoid):
     if os.path.isfile(f"cache/{videoid}_v4.png"):
@@ -73,89 +55,67 @@ async def get_thumb(videoid):
     url = f"https://www.youtube.com/watch?v={videoid}"
     results = VideosSearch(url, limit=1)
     for result in (await results.next())["result"]:
-        try:
-            title = result["title"]
-            title = re.sub("\W+", " ", title)
-            title = title.title()
-        except:
-            title = "Unsupported Title"
-        try:
-            duration = result["duration"]
-        except:
-            duration = "Unknown Mins"
+        title = re.sub("\W+", " ", result.get("title", "Untitled")).title()
+        duration = result.get("duration", "Unknown")
         thumbnail = result["thumbnails"][0]["url"].split("?")[0]
-        try:
-            views = result["viewCount"]["short"]
-        except:
-            views = "Unknown Views"
-        try:
-            channel = result["channel"]["name"]
-        except:
-            channel = "Unknown Channel"
+        views = result.get("viewCount", {}).get("short", "Unknown Views")
+        channel = result.get("channel", {}).get("name", "Unknown")
 
+    # Download the thumbnail
     async with aiohttp.ClientSession() as session:
         async with session.get(thumbnail) as resp:
             if resp.status == 200:
-                f = await aiofiles.open(f"cache/thumb{videoid}.png", mode="wb")
-                await f.write(await resp.read())
-                await f.close()
+                async with aiofiles.open(f"cache/thumb{videoid}.png", mode="wb") as f:
+                    await f.write(await resp.read())
 
     youtube = Image.open(f"cache/thumb{videoid}.png")
-    image1 = changeImageSize(1280, 720, youtube)
-    image2 = image1.convert("RGBA")
-    background = image2.filter(filter=ImageFilter.BoxBlur(20))
-    enhancer = ImageEnhance.Brightness(background)
-    background = enhancer.enhance(0.6)
+    resized_img = changeImageSize(1280, 720, youtube).convert("RGBA")
+
+    # Add purple blur background
+    blurred_bg = resized_img.filter(ImageFilter.GaussianBlur(25))
+    purple_overlay = Image.new("RGBA", blurred_bg.size, (140, 80, 180, 100))  # light purple overlay
+    background = Image.alpha_composite(blurred_bg, purple_overlay)
+
     draw = ImageDraw.Draw(background)
     arial = ImageFont.truetype("SHUKLAMUSIC/assets/assets/font2.ttf", 30)
     font = ImageFont.truetype("SHUKLAMUSIC/assets/assets/font.ttf", 30)
     title_font = ImageFont.truetype("SHUKLAMUSIC/assets/assets/font3.ttf", 45)
 
-
+    # Circular album art
     circle_thumbnail = crop_center_circle(youtube, 400, 20)
     circle_thumbnail = circle_thumbnail.resize((400, 400))
-    circle_position = (120, 160)
-    background.paste(circle_thumbnail, circle_position, circle_thumbnail)
+    background.paste(circle_thumbnail, (120, 160), circle_thumbnail)
 
-    text_x_position = 565
+    # Title and Channel Info
+    text_x = 565
+    lines = truncate(title)
+    draw.text((text_x, 180), lines[0], fill="white", font=title_font)
+    draw.text((text_x, 230), lines[1], fill="white", font=title_font)
+    draw.text((text_x, 320), f"{channel}  |  {views[:23]}", fill="white", font=arial)
 
-    title1 = truncate(title)
-    draw.text((text_x_position, 180), title1[0], fill=(255, 255, 255), font=title_font)
-    draw.text((text_x_position, 230), title1[1], fill=(255, 255, 255), font=title_font)
-    draw.text((text_x_position, 320), f"{channel}  |  {views[:23]}", (255, 255, 255), font=arial)
+    # Progress Bar
+    total_bar_len = 580
+    played_len = int(total_bar_len * 0.25)
+    draw.line([(text_x, 380), (text_x + played_len, 380)], fill="white", width=9)
+    draw.line([(text_x + played_len, text_x + total_bar_len), (text_x + total_bar_len, 380)], fill="#888", width=8)
 
-    
-    line_length = 580  
+    # Progress Dot
+    radius = 10
+    dot_pos = text_x + played_len
+    draw.ellipse([dot_pos - radius, 370 - radius, dot_pos + radius, 370 + radius], fill="white")
 
-    
-    red_length = int(line_length * 0.6)
-    white_length = line_length - red_length
+    # Time
+    draw.text((text_x, 400), "00:24", fill="white", font=arial)
+    draw.text((1080, 400), duration, fill="white", font=arial)
 
-    
-    start_point_red = (text_x_position, 380)
-    end_point_red = (text_x_position + red_length, 380)
-    draw.line([start_point_red, end_point_red], fill="red", width=9)
-
-    
-    start_point_white = (text_x_position + red_length, 380)
-    end_point_white = (text_x_position + line_length, 380)
-    draw.line([start_point_white, end_point_white], fill="white", width=8)
-
-    
-    circle_radius = 10 
-    circle_position = (end_point_red[0], end_point_red[1])
-    draw.ellipse([circle_position[0] - circle_radius, circle_position[1] - circle_radius,
-                  circle_position[0] + circle_radius, circle_position[1] + circle_radius], fill="red")
-    draw.text((text_x_position, 400), "00:00", (255, 255, 255), font=arial)
-    draw.text((1080, 400), duration, (255, 255, 255), font=arial)
-
-    play_icons = Image.open("SHUKLAMUSIC/assets/assets/play_icons.png")
-    play_icons = play_icons.resize((580, 62))
-    background.paste(play_icons, (text_x_position, 450), play_icons)
+    # Controls Image
+    play_icons = Image.open("SHUKLAMUSIC/assets/assets/controls.png").resize((580, 62))
+    background.paste(play_icons, (text_x, 450), play_icons)
 
     try:
         os.remove(f"cache/thumb{videoid}.png")
     except:
         pass
+
     background.save(f"cache/{videoid}_v4.png")
     return f"cache/{videoid}_v4.png"
