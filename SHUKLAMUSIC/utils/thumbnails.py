@@ -1,119 +1,194 @@
-import os
-import re
-import aiofiles
-import aiohttp
+#  Copyright (c) 2025 AshokShau
+#  Licensed under the GNU AGPL v3.0: https://www.gnu.org/licenses/agpl-3.0.html
+#  Part of the TgMusicBot project. All rights reserved where applicable.
+
+import asyncio
+from io import BytesIO
+
+import httpx
 from PIL import Image, ImageDraw, ImageEnhance, ImageFilter, ImageFont, ImageOps
-from youtubesearchpython.__future__ import VideosSearch
+from aiofiles.os import path as aiopath
 
-def changeImageSize(maxWidth, maxHeight, image):
-    widthRatio = maxWidth / image.size[0]
-    heightRatio = maxHeight / image.size[1]
-    newWidth = int(widthRatio * image.size[0])
-    newHeight = int(heightRatio * image.size[1])
-    return image.resize((newWidth, newHeight))
+from src.helpers import CachedTrack
+from src.logger import LOGGER
 
-def truncate(text):
-    parts = text.split(" ")
-    text1 = ""
-    text2 = ""
-    for part in parts:
-        if len(text1) + len(part) < 30:
-            text1 += " " + part
-        elif len(text2) + len(part) < 30:
-            text2 += " " + part
-    return [text1.strip(), text2.strip()]
+FONTS = {
+    "cfont": ImageFont.truetype("SHUKLAMUSIC/assets/assets/font2.ttf", 15),
+    "dfont": ImageFont.truetype("SHUKLAMUSIC/assets/assets/font3.ttf", 12),
+    "nfont": ImageFont.truetype("SHUKLAMUSIC/assets/assets/font.ttf", 10),
+    "tfont": ImageFont.truetype("SHUKLAMUSIC/assets/assets/font.ttf", 20),
+}
 
-def crop_center_circle(img, output_size, border, crop_scale=1.5):
-    center_x = img.size[0] / 2
-    center_y = img.size[1] / 2
-    size = int(output_size * crop_scale)
-    img = img.crop((
-        center_x - size / 2,
-        center_y - size / 2,
-        center_x + size / 2,
-        center_y + size / 2
-    ))
-    img = img.resize((output_size - 2 * border, output_size - 2 * border))
-    final_img = Image.new("RGBA", (output_size, output_size), "white")
 
-    mask_main = Image.new("L", (output_size - 2 * border, output_size - 2 * border), 0)
-    draw_main = ImageDraw.Draw(mask_main)
-    draw_main.ellipse((0, 0, output_size - 2 * border, output_size - 2 * border), fill=255)
-    final_img.paste(img, (border, border), mask_main)
+def resize_youtube_thumbnail(img: Image.Image) -> Image.Image:
+    """
+    Resize a YouTube thumbnail to 640x640 while keeping important content.
 
-    mask_border = Image.new("L", (output_size, output_size), 0)
-    draw_border = ImageDraw.Draw(mask_border)
-    draw_border.ellipse((0, 0, output_size, output_size), fill=255)
+    It crops the center of the image after resizing.
+    """
+    target_size = 640
+    aspect_ratio = img.width / img.height
 
-    return Image.composite(final_img, Image.new("RGBA", final_img.size, (0, 0, 0, 0)), mask_border)
+    if aspect_ratio > 1:
+        new_width = int(target_size * aspect_ratio)
+        new_height = target_size
+    else:
+        new_width = target_size
+        new_height = int(target_size / aspect_ratio)
 
-async def get_thumb(videoid):
-    # Always generate a new thumbnail
+    img = img.resize((new_width, new_height), Image.Resampling.LANCZOS)
 
-    url = f"https://www.youtube.com/watch?v={videoid}"
-    results = VideosSearch(url, limit=1)
-    for result in (await results.next())["result"]:
-        title = re.sub("\W+", " ", result.get("title", "Untitled")).title()
-        duration = result.get("duration", "Unknown")
-        thumbnail = result["thumbnails"][0]["url"].split("?")[0]
-        views = result.get("viewCount", {}).get("short", "Unknown Views")
-        channel = result.get("channel", {}).get("name", "Unknown")
+    # Crop to 640x640 (center crop)
+    left = (img.width - target_size) // 2
+    top = (img.height - target_size) // 2
+    right = left + target_size
+    bottom = top + target_size
 
-    # Download thumbnail
-    async with aiohttp.ClientSession() as session:
-        async with session.get(thumbnail) as resp:
-            if resp.status == 200:
-                async with aiofiles.open(f"cache/thumb{videoid}.png", mode="wb") as f:
-                    await f.write(await resp.read())
+    return img.crop((left, top, right, bottom))
 
-    youtube = Image.open(f"cache/thumb{videoid}.png")
-    resized_img = changeImageSize(1280, 720, youtube).convert("RGBA")
 
-    # Purple blur background
-    blurred_bg = resized_img.filter(ImageFilter.GaussianBlur(25))
-    purple_overlay = Image.new("RGBA", blurred_bg.size, (140, 80, 180, 100))  # purple tint
-    background = Image.alpha_composite(blurred_bg, purple_overlay)
+def resize_jiosaavn_thumbnail(img: Image.Image) -> Image.Image:
+    """
+    Resize a JioSaavn thumbnail from 500x500 to 600x600.
 
-    draw = ImageDraw.Draw(background)
-    arial = ImageFont.truetype("SHUKLAMUSIC/assets/assets/font2.ttf", 30)
-    font = ImageFont.truetype("SHUKLAMUSIC/assets/assets/font.ttf", 30)
-    title_font = ImageFont.truetype("SHUKLAMUSIC/assets/assets/font3.ttf", 45)
+    It upscales the image while preserving quality.
+    """
+    target_size = 600
+    img = img.resize((target_size, target_size), Image.Resampling.LANCZOS)
+    return img
 
-    # Circular thumbnail
-    circle_thumbnail = crop_center_circle(youtube, 400, 20)
-    background.paste(circle_thumbnail, (120, 160), circle_thumbnail)
 
-    # Title + Channel + Views
-    text_x = 565
-    lines = truncate(title)
-    draw.text((text_x, 180), lines[0], fill="white", font=title_font)
-    draw.text((text_x, 230), lines[1], fill="white", font=title_font)
-    draw.text((text_x, 320), f"{channel}  |  {views[:23]}", fill="white", font=arial)
+async def fetch_image(url: str) -> Image.Image | None:
+    """
+    Fetches an image from the given URL, resizes it if necessary for JioSaavn and
+    YouTube thumbnails, and returns the loaded image as a PIL Image object, or None on
+    failure.
 
-    # Progress bar
-    total_bar_len = 580
-    played_len = int(total_bar_len * 0.25)
-    draw.line([(text_x, 380), (text_x + played_len, 380)], fill="white", width=9)
-    draw.line([(text_x + played_len, text_x + total_bar_len), (text_x + total_bar_len, 380)], fill="#888", width=8)
+    Args:
+        url (str): URL of the image to fetch.
 
-    # Dot
-    radius = 10
-    dot_pos = text_x + played_len
-    draw.ellipse([dot_pos - radius, 370 - radius, dot_pos + radius, 370 + radius], fill="white")
+    Returns:
+        Image.Image | None: The fetched and possibly resized image, or None if the fetch fails.
+    """
+    if not url:
+        return None
 
-    # Time
-    draw.text((text_x, 400), "00:24", fill="white", font=arial)
-    draw.text((1080, 400), duration, fill="white", font=arial)
+    async with httpx.AsyncClient() as client:
+        try:
+            if url.startswith("https://is1-ssl.mzstatic.com"):
+                url = url.replace("500x500bb.jpg", "600x600bb.jpg")
+            response = await client.get(url, timeout=5)
+            response.raise_for_status()
+            img = Image.open(BytesIO(response.content)).convert("RGBA")
+            if url.startswith("https://i.ytimg.com"):
+                img = resize_youtube_thumbnail(img)
+            elif url.startswith("http://c.saavncdn.com") or url.startswith(
+                "https://i1.sndcdn"
+            ):
+                img = resize_jiosaavn_thumbnail(img)
+            return img
+        except Exception as e:
+            LOGGER.error("Image loading error: %s", e)
+            return None
 
-    # Controls image
-    play_icons = Image.open("SHUKLAMUSIC/assets/assets/controls.png").resize((580, 62))
-    background.paste(play_icons, (text_x, 450), play_icons)
 
-    # Save final image
-    save_path = f"cache/{videoid}_v4.png"
+def clean_text(text: str, limit: int = 17) -> str:
+    """
+    Sanitizes and truncates text to fit within the limit.
+    """
+    text = text.strip()
+    return f"{text[:limit - 3]}..." if len(text) > limit else text
+
+
+def add_controls(img: Image.Image) -> Image.Image:
+    """
+    Adds blurred background effect and overlay controls.
+    """
+    img = img.filter(ImageFilter.GaussianBlur(25))
+    box = (120, 120, 520, 480)
+
+    region = img.crop(box)
+    controls = Image.open("SHUKLAMUSIC/assets/assets/controls.png").convert("RGBA")
+    dark_region = ImageEnhance.Brightness(region).enhance(0.5)
+
+    mask = Image.new("L", dark_region.size, 0)
+    ImageDraw.Draw(mask).rounded_rectangle(
+        (0, 0, box[2] - box[0], box[3] - box[1]), 40, fill=255
+    )
+
+    img.paste(dark_region, box, mask)
+    img.paste(controls, (135, 305), controls)
+
+    return img
+
+
+def make_sq(image: Image.Image, size: int = 125) -> Image.Image:
+    """
+    Crops an image into a rounded square.
+    """
+    width, height = image.size
+    side_length = min(width, height)
+    crop = image.crop(
+        (
+            (width - side_length) // 2,
+            (height - side_length) // 2,
+            (width + side_length) // 2,
+            (height + side_length) // 2,
+        )
+    )
+    resize = crop.resize((size, size), Image.Resampling.LANCZOS)
+
+    mask = Image.new("L", (size, size), 0)
+    ImageDraw.Draw(mask).rounded_rectangle((0, 0, size, size), radius=30, fill=255)
+
+    rounded = ImageOps.fit(resize, (size, size))
+    rounded.putalpha(mask)
+    return rounded
+
+
+def get_duration(duration: int, time: str = "0:24") -> str:
+    """
+    Calculates remaining duration.
+    """
     try:
-        os.remove(f"cache/thumb{videoid}.png")
-    except:
-        pass
-    background.save(save_path)
-    return save_path
+        m1, s1 = divmod(duration, 60)
+        m2, s2 = map(int, time.split(":"))
+        sec = (m1 * 60 + s1) - (m2 * 60 + s2)
+        _min, sec = divmod(sec, 60)
+        return f"{_min}:{sec:02d}"
+    except Exception as e:
+        LOGGER.error("Duration calculation error: %s", e)
+        return "0:00"
+
+
+async def gen_thumb(song: CachedTrack) -> str:
+    """
+    Generates and saves a thumbnail for the song.
+    """
+    save_dir = f"database/photos/{song.track_id}.png"
+    if await aiopath.exists(save_dir):
+        return save_dir
+
+    title, artist = clean_text(song.name), clean_text(song.artist or "Spotify")
+    duration = song.duration or 0
+
+    thumb = await fetch_image(song.thumbnail)
+    if not thumb:
+        return ""
+
+    # Process Image
+    bg = add_controls(thumb)
+    image = make_sq(thumb)
+
+    # Positions
+    paste_x, paste_y = 145, 155
+    bg.paste(image, (paste_x, paste_y), image)
+
+    draw = ImageDraw.Draw(bg)
+    draw.text((285, 180), "Tseries Music", (192, 192, 192), font=FONTS["nfont"])
+    draw.text((285, 200), title, (255, 255, 255), font=FONTS["tfont"])
+    draw.text((287, 235), artist, (255, 255, 255), font=FONTS["cfont"])
+    draw.text((478, 321), get_duration(duration), (192, 192, 192), font=FONTS["dfont"])
+
+    await asyncio.to_thread(bg.save, save_dir)
+    return save_dir if await aiopath.exists(save_dir) else ""
